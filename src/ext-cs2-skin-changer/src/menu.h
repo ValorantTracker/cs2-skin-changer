@@ -3,6 +3,7 @@
 #include "../ext/skindb.h"
 #include "window/window.hpp"
 #include "ui_engine.hpp"
+#include "config.h"
 
 static WeaponsEnum CurrentWeaponDef;
 static int selectedSkinIndex = 0;
@@ -101,7 +102,7 @@ void RenderWeaponTab(float x, float y, float w, float h)
 
         bool selected = (selectedSkinIndex == idx);
         
-        if (SC_GUI::SkinCard("wskin_" + availableSkins[idx].name, availableSkins[idx].name, availableSkins[idx].image_url, availableSkins[idx].rarity, cX, cY, itemW, itemH, selected)) {
+        if (SC_GUI::SkinCard("wskin_" + availableSkins[idx].name, availableSkins[idx].name, availableSkins[idx].image_url, availableSkins[idx].rarity, cX, cY, itemW, itemH, selected, configManager->diskCacheEnabled)) {
             if (idx != 0) skinManager->AddSkin(availableSkins[idx]);
             else {
                 skinManager->AddSkin(availableSkins[idx]); 
@@ -217,7 +218,7 @@ void RenderKnifeTab(float x, float y, float w, float h)
          if (cY + itemH < viewY || cY > viewY + viewH) { displayIdx++; continue; }
 
          bool selected = (selectedKnifeSkinIndex == i);
-         if (SC_GUI::SkinCard("kskin_" + filteredSkins[i].name, filteredSkins[i].name, filteredSkins[i].image_url, filteredSkins[i].rarity, cX, cY, itemW, itemH, selected)) {
+         if (SC_GUI::SkinCard("kskin_" + filteredSkins[i].name, filteredSkins[i].name, filteredSkins[i].image_url, filteredSkins[i].rarity, cX, cY, itemW, itemH, selected, configManager->diskCacheEnabled)) {
              selectedKnifeSkinIndex = i;
              if (i!=0) {
                  SkinInfo_t s = filteredSkins[i];
@@ -280,7 +281,7 @@ void RenderMusicTab(float x, float y, float w, float h)
 
         bool selected = (selectedMusicKitIndex == idx);
         // Use Rarity 3 (Rare/Blue) for Music Kits as default
-        if (SC_GUI::SkinCard("music_" + std::to_string(idx), musicKits[idx].name, musicKits[idx].image_url, 3, cX, cY, itemW, itemH, selected)) {
+        if (SC_GUI::SkinCard("music_" + std::to_string(idx), musicKits[idx].name, musicKits[idx].image_url, 3, cX, cY, itemW, itemH, selected, configManager->diskCacheEnabled)) {
              selectedMusicKitIndex = idx;
              skinManager->MusicKit = musicKits[idx];
              ForceUpdate = true;
@@ -298,7 +299,7 @@ void RenderMusicTab(float x, float y, float w, float h)
     }
 }
 
-#include "config.h"
+
 
 void RenderConfigTab(float x, float y, float w, float h)
 {
@@ -376,6 +377,14 @@ void RenderSettingsTab(float x, float y, float w, float h)
     static float alphaVal = 255.0f;
     if (SC_GUI::Slider("alpha_slider", &alphaVal, 50.0f, 255.0f, x + 20, curY, 300, 20)) {
         overlay::GlobalAlpha = (BYTE)alphaVal;
+    }
+    curY += 40;
+
+    // Disk Cache
+    if (SC_GUI::Checkbox("disk_cache_check", "Enable Disk Cache", &configManager->diskCacheEnabled, x + 20, curY)) {
+        if (!configManager->diskCacheEnabled) {
+            SC_GUI::TextureCache.ClearDisk();
+        }
     }
     curY += 40;
 
@@ -498,7 +507,7 @@ void RenderGloveTab(float x, float y, float w, float h)
         // We need to check if current Glove Def matches AND paint matches
         bool isSelected = (currentPaint == gloves[i].Paint && currentDef == GloveTypes[selectedGloveIdx].defIndex);
         
-        if (SC_GUI::SkinCard("glove_" + std::to_string(i), gloves[i].name, gloves[i].image_url, gloves[i].rarity, drawX, drawY, cardW, cardH, isSelected)) {
+        if (SC_GUI::SkinCard("glove_" + std::to_string(i), gloves[i].name, gloves[i].image_url, gloves[i].rarity, drawX, drawY, cardW, cardH, isSelected, configManager->diskCacheEnabled)) {
             // Apply Glove
             skinManager->Gloves.defIndex = GloveTypes[selectedGloveIdx].defIndex;
             skinManager->Gloves.Paint = gloves[i].Paint;

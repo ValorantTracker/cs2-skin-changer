@@ -59,6 +59,9 @@ public:
         j["musickit_id"] = skinManager->MusicKit.id;
         j["musickit_name"] = skinManager->MusicKit.name;
 
+        // Settings
+        j["disk_cache_enabled"] = diskCacheEnabled;
+
         // Write
         std::string path = std::string(configDir.begin(), configDir.end()) + name + ".json";
         std::ofstream o(path);
@@ -106,6 +109,10 @@ public:
                     skinManager->MusicKit.name = j["musickit_name"].get<std::string>();
             }
 
+            if (j.find("disk_cache_enabled") != j.end()) {
+                diskCacheEnabled = j["disk_cache_enabled"].get<bool>();
+            }
+
             ForceUpdate = true;
         } catch (...) {
             // Corrupt file
@@ -115,6 +122,9 @@ public:
     // Auto Logic
     void AutoSave() { Save("default"); }
     void AutoLoad() { Load("default"); }
+
+    // Settings
+    bool diskCacheEnabled = true;
 };
 
 inline CConfigManager* configManager = new CConfigManager();

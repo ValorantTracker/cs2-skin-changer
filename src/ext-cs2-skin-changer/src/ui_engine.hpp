@@ -6,6 +6,11 @@
 #include <map>
 #include <gdiplus.h>
 #include <cctype>
+#include <mutex>
+#include <shared_mutex>
+#include <thread>
+#include <filesystem>
+#include <fstream>
 
 #pragma comment (lib,"Gdiplus.lib")
 
@@ -244,6 +249,251 @@ namespace SC_GUI {
         return clicked;
     }
 
+    // --- Image Handling utilizing LRU Cache + Disk Persistence + RAM Limit ---
+    class ImageCache {
+    private:
+        struct CacheNode {
+            std::string key;
+            Image* image;
+            size_t sizeBytes;
+            ULONGLONG lastUsed;
+        };
+        
+        std::map<std::string, Image*> cache;
+        std::map<std::string, size_t> cacheSizes;
+        std::vector<std::string> lruList; 
+        
+        mutable std::shared_mutex cacheMutex; // RW Lock
+        
+        const size_t MAX_RAM_USAGE = 50 * 1024 * 1024; // 50 MB
+        size_t currentRamUsage = 0;
+        
+        const std::string CACHE_DIR = "C:\\Skin2Merde\\images";
+
+        // Download State
+        std::map<std::string, bool> downloadActive;
+        std::mutex downloadMutex;
+
+        std::string SanitizeFilename(const std::string& key) {
+            std::string s = key;
+            std::replace(s.begin(), s.end(), '|', '_');
+            std::replace(s.begin(), s.end(), ':', '_');
+            std::replace(s.begin(), s.end(), '/', '_');
+            std::replace(s.begin(), s.end(), '\\', '_');
+            std::replace(s.begin(), s.end(), ' ', '_');
+            return s + ".png";
+        }
+
+        // Helper for raw bytes
+        struct MemoryStruct {
+            char* memory;
+            size_t size;
+        };
+
+    public:
+        ImageCache() {
+            try {
+                if (!std::filesystem::exists(CACHE_DIR)) {
+                    std::filesystem::create_directories(CACHE_DIR);
+                }
+            } catch (...) {}
+        }
+
+        ~ImageCache() {
+            std::unique_lock<std::shared_mutex> lock(cacheMutex);
+            for (auto& pair : cache) {
+                delete pair.second;
+            }
+            cache.clear();
+        }
+
+        void ClearDisk() {
+                try {
+                if (std::filesystem::exists(CACHE_DIR)) {
+                    std::filesystem::remove_all(CACHE_DIR);
+                }
+                } catch (...) {}
+        }
+
+        Image* Get(const std::string& key, const std::string& url, bool diskEnabled) {
+            // 1. Try RAM (Read Lock)
+            {
+                std::shared_lock<std::shared_mutex> lock(cacheMutex);
+                auto it = cache.find(key);
+                if (it != cache.end()) {
+                    return it->second;
+                }
+            }
+
+            // 2. RAM Miss -> Trigger Background Load
+            if (!IsDownloading(key) && !url.empty()) {
+                SetDownloading(key, true);
+                
+                std::thread([this, key, url, diskEnabled]() {
+                    // A. Try Disk First (if enabled)
+                    if (diskEnabled) {
+                            // Ensure dir exists (in case it was deleted)
+                            try {
+                            if (!std::filesystem::exists(CACHE_DIR)) std::filesystem::create_directories(CACHE_DIR);
+                            } catch(...) {}
+
+                            std::string path = CACHE_DIR + "\\" + SanitizeFilename(key);
+                            if (std::filesystem::exists(path)) {
+                            Image* loaded = new Image(std::wstring(path.begin(), path.end()).c_str());
+                            if (loaded && loaded->GetLastStatus() == Ok) {
+                                    AddDirect(key, loaded); 
+                                    SetDownloading(key, false);
+                                    return;
+                            } else {
+                                delete loaded;
+                            }
+                            }
+                    }
+
+                    // B. Download if Disk Miss or Disabled
+                    CURL* curl = curl_easy_init();
+                    if (curl) {
+                        MemoryStruct chunk;
+                        chunk.memory = (char*)malloc(1);
+                        chunk.size = 0;
+                        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+                        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* contents, size_t size, size_t nmemb, void* userp) -> size_t {
+                            size_t realsize = size * nmemb;
+                            MemoryStruct* mem = (MemoryStruct*)userp;
+                            char* ptr = (char*)realloc(mem->memory, mem->size + realsize + 1);
+                            if(!ptr) return 0;
+                            mem->memory = ptr;
+                            memcpy(&(mem->memory[mem->size]), contents, realsize);
+                            mem->size += realsize;
+                            mem->memory[mem->size] = 0;
+                            return realsize;
+                        });
+                        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
+                        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+                        CURLcode res = curl_easy_perform(curl);
+                        if (res == CURLE_OK) {
+                            IStream* pStream = NULL;
+                            if (CreateStreamOnHGlobal(NULL, TRUE, &pStream) == S_OK) {
+                                pStream->Write(chunk.memory, (ULONG)chunk.size, NULL);
+                                pStream->Seek({0}, STREAM_SEEK_SET, NULL);
+                                Image* pImg = Image::FromStream(pStream);
+                                if (pImg && pImg->GetLastStatus() == Ok) {
+                                    // Create Scaled Thumbnail
+                                    int tW = 200; int tH = 150; 
+                                    Bitmap* thumb = new Bitmap(tW, tH, PixelFormat32bppARGB);
+                                    Graphics* g = Graphics::FromImage(thumb);
+                                    g->SetInterpolationMode(InterpolationModeHighQualityBicubic);
+                                    g->DrawImage(pImg, 0, 0, tW, tH);
+                                    delete g;
+                                    delete pImg; 
+                                    
+                                    // Save to Disk (if enabled)
+                                    if (diskEnabled) {
+                                        try {
+                                            if (!std::filesystem::exists(CACHE_DIR)) std::filesystem::create_directories(CACHE_DIR);
+                                            std::string path = CACHE_DIR + "\\" + SanitizeFilename(key);
+                                            CLSID pngClsid;
+                                            GetEncoderClsid(L"image/png", &pngClsid);
+                                            thumb->Save(std::wstring(path.begin(), path.end()).c_str(), &pngClsid, NULL);
+                                        } catch (...) {}
+                                    }
+
+                                    AddDirect(key, thumb);
+                                } else { delete pImg; }
+                                pStream->Release(); 
+                            }
+                        }
+                        free(chunk.memory);
+                        curl_easy_cleanup(curl);
+                    }
+                    SetDownloading(key, false);
+                }).detach();
+            }
+
+            return nullptr;
+        }
+
+    private:
+        void AddDirect(const std::string& key, Image* img) {
+                std::unique_lock<std::shared_mutex> lock(cacheMutex);
+                AddToCacheInternal(key, img);
+        }
+
+        void AddToCacheInternal(const std::string& key, Image* img) {
+                // Calculate Size
+            size_t imgSize = img->GetWidth() * img->GetHeight() * 4; // Approx ARGB
+            
+            // Evict if needed
+            while (currentRamUsage + imgSize > MAX_RAM_USAGE && !lruList.empty()) {
+                std::string toRemove = lruList.front();
+                lruList.erase(lruList.begin());
+                
+                auto it = cache.find(toRemove);
+                if (it != cache.end()) {
+                        currentRamUsage -= cacheSizes[toRemove];
+                        delete it->second;
+                        cache.erase(it);
+                        cacheSizes.erase(toRemove);
+                }
+            }
+
+            if (cache.find(key) == cache.end()) {
+                cache[key] = img;
+                cacheSizes[key] = imgSize;
+                currentRamUsage += imgSize;
+                lruList.push_back(key);
+            } else {
+                // Update existing
+                currentRamUsage -= cacheSizes[key];
+                delete cache[key];
+                
+                cache[key] = img;
+                cacheSizes[key] = imgSize;
+                currentRamUsage += imgSize;
+                
+                auto lit = std::find(lruList.begin(), lruList.end(), key);
+                if (lit != lruList.end()) {
+                    lruList.erase(lit);
+                    lruList.push_back(key);
+                }
+            }
+        }
+
+        int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
+            UINT  num = 0;          // number of image encoders
+            UINT  size = 0;         // size of the image encoder array in bytes
+            GetImageEncodersSize(&num, &size);
+            if(size == 0) return -1;  // Failure
+            if(size == 0) return -1;  // Failure
+            ImageCodecInfo* pImageCodecInfo = (ImageCodecInfo*)(malloc(size));
+            if(pImageCodecInfo == NULL) return -1;  // Failure
+            GetImageEncoders(num, size, pImageCodecInfo);
+            for(UINT j = 0; j < num; ++j) {
+                if( wcscmp(pImageCodecInfo[j].MimeType, format) == 0 ) {
+                    *pClsid = pImageCodecInfo[j].Clsid;
+                    free(pImageCodecInfo);
+                    return j;  // Success
+                }    
+            }
+            free(pImageCodecInfo);
+            return -1;  // Failure
+        }
+
+    public:
+        bool IsDownloading(const std::string& key) {
+            std::lock_guard<std::mutex> lock(downloadMutex);
+            return downloadActive[key];
+        }
+
+        void SetDownloading(const std::string& key, bool state) {
+            std::lock_guard<std::mutex> lock(downloadMutex);
+            downloadActive[key] = state;
+        }
+
+    };
+    
+    inline ImageCache TextureCache;
+
     // --- Widgets ---
 
     // Modern Sidebar Tab
@@ -296,7 +546,7 @@ namespace SC_GUI {
     }
 
     // Redesigned SkinCard
-    inline bool SkinCard(const std::string& id, const std::string& name, const std::string& image_url, int rarity, float x, float y, float w, float h, bool selected) {
+    inline bool SkinCard(const std::string& id, const std::string& name, const std::string& image_url, int rarity, float x, float y, float w, float h, bool selected, bool diskEnabled = true) {
         bool hovered = (Input.mousePos.x >= x && Input.mousePos.x <= x + w && Input.mousePos.y >= y && Input.mousePos.y <= y + h);
         bool clicked = hovered && Input.leftClicked;
 
@@ -311,7 +561,6 @@ namespace SC_GUI {
         Color bgActive = Color(255, 50, 50, 60); // Slightly lighter
         
         // If selected, maybe use a tinted background or just a border
-        // Let's use a subtle border for selected, and light bg for hover
         Color bg = InterpColor(bgNormal, Color(255, 45, 45, 50), anim);
         if (selected) bg = Color(255, 40, 40, 45);
 
@@ -331,89 +580,35 @@ namespace SC_GUI {
 
         DrawStrokeRoundedRect(x, y, w, h, radius, borderColor, selected ? 2.0f : 1.0f);
 
-        // --- Image Handling ---
-        static std::map<std::string, Image*> imageCache;
-        static std::map<std::string, Image*> thumbCache;
-        static std::map<std::string, bool> downloadStarted;
 
-         // Helper for raw bytes
-        struct MemoryStruct {
-            char* memory;
-            size_t size;
-        };
+
+
         
-        // Download Check
-        if (thumbCache.find(name) == thumbCache.end() && !downloadStarted[name] && !image_url.empty()) {
-             downloadStarted[name] = true;
-             std::thread([name, image_url]() {
-                CURL* curl = curl_easy_init();
-                if (curl) {
-                    MemoryStruct chunk;
-                    chunk.memory = (char*)malloc(1);
-                    chunk.size = 0;
-                    curl_easy_setopt(curl, CURLOPT_URL, image_url.c_str());
-                    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* contents, size_t size, size_t nmemb, void* userp) -> size_t {
-                        size_t realsize = size * nmemb;
-                        MemoryStruct* mem = (MemoryStruct*)userp;
-                        char* ptr = (char*)realloc(mem->memory, mem->size + realsize + 1);
-                        if(!ptr) return 0;
-                        mem->memory = ptr;
-                        memcpy(&(mem->memory[mem->size]), contents, realsize);
-                        mem->size += realsize;
-                        mem->memory[mem->size] = 0;
-                        return realsize;
-                    });
-                    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
-                    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-                    CURLcode res = curl_easy_perform(curl);
-                    if (res == CURLE_OK) {
-                        IStream* pStream = NULL;
-                        if (CreateStreamOnHGlobal(NULL, TRUE, &pStream) == S_OK) {
-                            pStream->Write(chunk.memory, (ULONG)chunk.size, NULL);
-                            pStream->Seek({0}, STREAM_SEEK_SET, NULL);
-                            Image* pImg = Image::FromStream(pStream);
-                            if (pImg && pImg->GetLastStatus() == Ok) {
-                                // Create Scaled Thumbnail (Larger for quality)
-                                int tW = 200; int tH = 150; 
-                                Bitmap* thumb = new Bitmap(tW, tH, PixelFormat32bppARGB);
-                                Graphics* g = Graphics::FromImage(thumb);
-                                g->SetInterpolationMode(InterpolationModeHighQualityBicubic);
-                                g->DrawImage(pImg, 0, 0, tW, tH);
-                                delete g;
-                                delete pImg; // Free original
-                                thumbCache[name] = thumb;
-                            } else { delete pImg; }
-                            pStream->Release(); 
-                        }
-                    }
-                    free(chunk.memory);
-                    curl_easy_cleanup(curl);
-                }
-             }).detach();
-        }
+        // Check Cache (Async Get)
+        Image* cachedImg = TextureCache.Get(name, image_url, diskEnabled);
 
-        // Draw Image
+        // Draw Image using Cache Result
         float imgAreaH = h * 0.65f;
         float imgPad = 10.0f;
-        if (thumbCache.find(name) != thumbCache.end() && thumbCache[name]) {
-             Image* img = thumbCache[name];
-             float imgW = (float)img->GetWidth();
-             float imgH = (float)img->GetHeight();
+        
+        if (cachedImg) {
+             float imgW = (float)cachedImg->GetWidth();
+             float imgH = (float)cachedImg->GetHeight();
              
              // Fit within area
              float maxW = w - (imgPad * 2);
              float maxH = imgAreaH - (imgPad * 2);
              
-             float ratio = min(maxW / imgW, maxH / imgH);
+             float ratio = (std::min)(maxW / imgW, maxH / imgH);
              float drawW = imgW * ratio;
              float drawH = imgH * ratio;
              
              float drawX = x + (w - drawW) / 2;
              float drawY = y + imgPad + (maxH - drawH) / 2; // Vertically center in top area
 
-             gfx->DrawImage(img, (REAL)drawX, (REAL)drawY, (REAL)drawW, (REAL)drawH);
+             gfx->DrawImage(cachedImg, (REAL)drawX, (REAL)drawY, (REAL)drawW, (REAL)drawH);
         } else {
-             // Placeholder
+             // Placeholder or Loading
         }
 
         // Text Area
@@ -538,5 +733,29 @@ namespace SC_GUI {
         DrawFilledRoundedRect(knobX, knobY, knobSize, knobSize, knobSize, Color(255, 255, 255, 255));
         
         return changed;
+    }
+
+    inline bool Checkbox(const std::string& id, const std::string& label, bool* value, float x, float y) {
+        float size = 20.0f;
+        bool hovered = (Input.mousePos.x >= x && Input.mousePos.x <= x + size + 200 && Input.mousePos.y >= y && Input.mousePos.y <= y + size);
+        bool clicked = hovered && Input.leftClicked;
+
+        if (clicked) *value = !(*value);
+
+        // Draw Box
+        Color border = currentTheme.border;
+        if (*value) border = currentTheme.accent;
+        else if (hovered) border = Color(255, 120, 120, 120);
+        
+        DrawStrokeRoundedRect(x, y, size, size, 4.0f, border, 1.5f);
+        
+        if (*value) {
+            DrawFilledRoundedRect(x + 4, y + 4, size - 8, size - 8, 2.0f, currentTheme.accent);
+        }
+
+        // Label
+        DrawStringA(label, x + size + 10, y + size/2, currentTheme.text, mainFont, vCenterFormat);
+        
+        return clicked;
     }
 }
