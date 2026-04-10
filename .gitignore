@@ -1,0 +1,47 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.opensdf
+*.sdf
+*.cache
+*.db
+*.opendsb
+*.opendb
+
+# Compiled Object files
+*.obj
+*.o
+*.cod
+
+# Compiled Dynamic libraries
+*.dll
+*.so
+*.dylib
+
+# Compiled Static libraries
+*.lib
+*.a
+
+# Executables
+*.exe
+*.out
+*.app
+/bin/
+/build/
+/x64/
+/Debug/
+/Release/
+
+# NuGet
+packages/
+
+# Misc
+*.log
+*.tlog
+*.idb
+*.pdb
+*.ilk
+*.ipch
+*.aps
+*.ncb
