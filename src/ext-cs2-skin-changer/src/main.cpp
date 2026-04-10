@@ -15,13 +15,13 @@ void SkinChangerThread()
 
     while (true)
     {
-        Sleep(20); // Slightly higher sleep
+        Sleep(15);
         const uintptr_t localPlayer = GetLocalPlayer();
         if (!localPlayer) continue;
 
         const uintptr_t activeWeapon = mem.Read<uintptr_t>(localPlayer + Offsets::m_pClippingWeapon);
         const std::vector<uintptr_t> weapons = GetWeapons(localPlayer);
-        
+
         bool anyUpdated = false;
 
         // Only full scan if active weapon changed or force update
@@ -32,11 +32,11 @@ void SkinChangerThread()
                 const uintptr_t item = weapon + Offsets::m_AttributeManager + Offsets::m_Item;
                 WeaponsEnum defIndex = mem.Read<WeaponsEnum>(item + Offsets::m_iItemDefinitionIndex);
                 SkinInfo_t skin = skinManager->GetSkin(defIndex);
-                
+
                 // Knife Logic
                 Knife_t customKnife = skinManager->GetKnife();
                 bool isKnife = (defIndex == WeaponsEnum::CtKnife || defIndex == WeaponsEnum::Tknife || (defIndex >= 500 && defIndex <= 526));
-                
+
                 if (isKnife && customKnife.defIndex != 0) {
                      skin = skinManager->GetSkin(WeaponsEnum::CtKnife); // Get the skin assigned to knives
                      if (skin.Paint == 0) skin = skinManager->GetSkin(WeaponsEnum::Tknife);
@@ -56,7 +56,7 @@ void SkinChangerThread()
                     hudMaskOk = (mem.Read<uint64_t>(hudModel + Offsets::m_MeshGroupMask) == mask);
                 }
 
-                bool needsUpdate = ForceUpdate || 
+                bool needsUpdate = ForceUpdate ||
                                    (isKnife && customKnife.defIndex != 0 && (uint16_t)defIndex != customKnife.defIndex) ||
                                    (mem.Read<uint32_t>(item + Offsets::m_iItemIDHigh) != 1337) ||
                                    (mem.Read<uint32_t>(weapon + Offsets::m_nFallbackPaintKit) != skin.Paint) ||
