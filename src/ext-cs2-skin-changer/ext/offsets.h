@@ -1,5 +1,5 @@
-#include "a2x/client_dll.hpp"
-#include "a2x/offsets.hpp"
+#include "../output/client_dll.hpp"
+#include "../output/offsets.hpp"
 
 #pragma once
 
