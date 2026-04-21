@@ -1,4 +1,5 @@
 #pragma once
+#include "SDK/entity/CWeaponServices.h"
 #include "SDK/weapon/C_EconEntity.h"
 #include "../ext/skindb.h"
 #include "window/window.hpp"
@@ -615,7 +616,7 @@ void MenuThread()
 
 void UpdateActiveMenuDef(const uintptr_t localPlayer)
 {
-	const uintptr_t activeWeapon = mem.Read<uintptr_t>(localPlayer + Offsets::m_pClippingWeapon);
+	const uintptr_t activeWeapon = GetActiveWeapon_Standard(localPlayer);
 	const uintptr_t activeItem = activeWeapon + Offsets::m_AttributeManager + Offsets::m_Item;
 	CurrentWeaponDef = mem.Read<WeaponsEnum>(activeItem + Offsets::m_iItemDefinitionIndex);
 }

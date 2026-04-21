@@ -17,10 +17,21 @@ void SkinChangerThread()
     {
         Sleep(15);
         const uintptr_t localPlayer = GetLocalPlayer();
-        if (!localPlayer) continue;
+        if (!localPlayer) {
+            static bool loggedNoPlayer = false;
+            if (!loggedNoPlayer) {
+                std::cout << "[SkinChanger] Waiting for LocalPlayerPawn..." << std::endl;
+                loggedNoPlayer = true;
+            }
+            continue;
+        }
 
-        const uintptr_t activeWeapon = mem.Read<uintptr_t>(localPlayer + Offsets::m_pClippingWeapon);
-        const std::vector<uintptr_t> weapons = GetWeapons(localPlayer);
+        const uintptr_t activeWeapon = GetActiveWeapon_Standard(localPlayer);
+        const std::vector<uintptr_t> weapons = GetWeapons_Standard(localPlayer);
+
+        if (activeWeapon != lastActiveWeapon) {
+            std::cout << "[SkinChanger] LocalPlayer: " << std::hex << localPlayer << " | Active Weapon: " << activeWeapon << std::dec << " | Count: " << weapons.size() << std::endl;
+        }
 
         bool anyUpdated = false;
 
@@ -116,7 +127,7 @@ void GloveChangerThread()
             mem.Write<int>(econGloves + Offsets::m_iEntityQuality, 3);
 
             // XUID Fix
-            const std::vector<uintptr_t> weapons = GetWeapons(localPlayer);
+            const std::vector<uintptr_t> weapons = GetWeapons_Standard(localPlayer);
             if (!weapons.empty()) {
                 int xuidLow = mem.Read<int>(weapons[0] + Offsets::m_OriginalOwnerXuidLow);
                 int xuidHigh = mem.Read<int>(weapons[0] + Offsets::m_OriginalOwnerXuidLow + 4);

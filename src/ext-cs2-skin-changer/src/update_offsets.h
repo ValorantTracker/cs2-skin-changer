@@ -55,26 +55,33 @@ namespace Updater {
     void UpdateOffsets() {
         std::cout << "[Updater] Checking for offset updates..." << std::endl;
         
-        std::string cacheDir;
-        char appDataPath[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
-            cacheDir = std::string(appDataPath) + "\\SkinChanger\\cache";
-        } else {
-            cacheDir = ".\\cache";
+        std::string clientData;
+        if (std::filesystem::exists("output\\client_dll.json")) {
+            std::ifstream f("output\\client_dll.json");
+            clientData.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            std::cout << "[Updater] Using local output\\client_dll.json" << std::endl;
         }
 
-        std::filesystem::create_directories(cacheDir);
-        std::string clientPath = cacheDir + "\\client_dll.json";
-        std::string offsetsPath = cacheDir + "\\offsets.json";
+        if (clientData.empty()) {
+            std::string cacheDir;
+            char appDataPath[MAX_PATH];
+            if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
+                cacheDir = std::string(appDataPath) + "\\SkinChanger\\cache";
+            } else {
+                cacheDir = ".\\cache";
+            }
+            std::filesystem::create_directories(cacheDir);
+            std::string clientPath = cacheDir + "\\client_dll.json";
 
-        std::string clientData = FetchURL("https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/client_dll.json");
-        if (clientData.empty() && std::filesystem::exists(clientPath)) {
-            std::ifstream f(clientPath);
-            clientData.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            std::cout << "[Updater] Using cached client_dll.json" << std::endl;
-        } else if (!clientData.empty()) {
-            std::ofstream f(clientPath);
-            f << clientData;
+            clientData = FetchURL("https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/client_dll.json");
+            if (clientData.empty() && std::filesystem::exists(clientPath)) {
+                std::ifstream f(clientPath);
+                clientData.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                std::cout << "[Updater] Using cached client_dll.json" << std::endl;
+            } else if (!clientData.empty()) {
+                std::ofstream f(clientPath);
+                f << clientData;
+            }
         }
 
         if (!clientData.empty()) {
@@ -91,7 +98,6 @@ namespace Updater {
 
                 Offsets::m_pInventoryServices = get("CCSPlayerController", "m_pInventoryServices");
                 Offsets::m_unMusicID = get("CCSPlayerController_InventoryServices", "m_unMusicID");
-                Offsets::m_pClippingWeapon = get("C_CSPlayerPawn", "m_pClippingWeapon");
                 Offsets::m_pWeaponServices = get("C_BasePlayerPawn", "m_pWeaponServices");
                 Offsets::m_hHudModelArms = get("C_CSPlayerPawn", "m_hHudModelArms");
                 Offsets::m_hOwnerEntity = get("C_BaseEntity", "m_hOwnerEntity");
@@ -134,14 +140,33 @@ namespace Updater {
             }
         }
 
-        std::string offsetsData = FetchURL("https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/offsets.json");
-        if (offsetsData.empty() && std::filesystem::exists(offsetsPath)) {
-            std::ifstream f(offsetsPath);
+        std::string offsetsData;
+        if (std::filesystem::exists("output\\offsets.json")) {
+            std::ifstream f("output\\offsets.json");
             offsetsData.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            std::cout << "[Updater] Using cached offsets.json" << std::endl;
-        } else if (!offsetsData.empty()) {
-            std::ofstream f(offsetsPath);
-            f << offsetsData;
+            std::cout << "[Updater] Using local output\\offsets.json" << std::endl;
+        }
+
+        if (offsetsData.empty()) {
+            std::string cacheDir;
+            char appDataPath[MAX_PATH];
+            if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
+                cacheDir = std::string(appDataPath) + "\\SkinChanger\\cache";
+            } else {
+                cacheDir = ".\\cache";
+            }
+            std::filesystem::create_directories(cacheDir);
+            std::string offsetsPath = cacheDir + "\\offsets.json";
+
+            offsetsData = FetchURL("https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/offsets.json");
+            if (offsetsData.empty() && std::filesystem::exists(offsetsPath)) {
+                std::ifstream f(offsetsPath);
+                offsetsData.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                std::cout << "[Updater] Using cached offsets.json" << std::endl;
+            } else if (!offsetsData.empty()) {
+                std::ofstream f(offsetsPath);
+                f << offsetsData;
+            }
         }
 
         if(!offsetsData.empty()) {
@@ -154,7 +179,7 @@ namespace Updater {
                 if (client.find("dwLocalPlayerController") != client.end()) Offsets::dwLocalPlayerController = static_cast<std::ptrdiff_t>(client["dwLocalPlayerController"].get<uint64_t>());
                 if (client.find("dwLocalPlayerPawn") != client.end()) Offsets::dwLocalPlayerPawn = static_cast<std::ptrdiff_t>(client["dwLocalPlayerPawn"].get<uint64_t>());
 
-                std::cout << "[Updater] Global offsets updated." << std::endl;
+                std::cout << "[Updater] Global offsets updated. Pawn: 0x" << std::hex << Offsets::dwLocalPlayerPawn << std::dec << std::endl;
              } catch (const std::exception& e) {
                  std::cout << "[Updater] Failed to parse offsets.json: " << e.what() << std::endl;
              }

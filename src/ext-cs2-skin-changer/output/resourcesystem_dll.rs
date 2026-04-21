@@ -1,5 +1,5 @@
 // Generated using https://github.com/a2x/cs2-dumper
-// 2026-04-05 12:35:01.134737800 UTC
+// 2026-04-21 17:08:09.622524700 UTC
 
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case, unused)]
 
@@ -29,13 +29,6 @@ pub mod cs2_dumper {
             pub enum FuseVariableAccess_t {
                 WRITABLE = 0x0,
                 READ_ONLY = 0x1
-            }
-            // Parent: None
-            // Field count: 0
-            //
-            // Metadata:
-            // MResourceTypeForInfoType
-            pub mod InfoForResourceTypeCNmIKRig {
             }
             // Parent: None
             // Field count: 0
@@ -374,6 +367,13 @@ pub mod cs2_dumper {
             // Metadata:
             // MResourceTypeForInfoType
             pub mod InfoForResourceTypeIPulseGraphDef {
+            }
+            // Parent: None
+            // Field count: 0
+            //
+            // Metadata:
+            // MResourceTypeForInfoType
+            pub mod InfoForResourceTypeCVDataItemDefs {
             }
             // Parent: None
             // Field count: 5
