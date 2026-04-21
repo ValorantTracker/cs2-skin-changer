@@ -1,16 +1,15 @@
-﻿#include <iostream>
+#include <iostream>
 #include <string>
 #include <vector>
-#include <curl/curl.h>
 #include <nlohmann/json.hpp>
-#ifdef _WIN32
 #include <windows.h>
-#endif
-
 #include <winhttp.h>
 #include <shlobj.h>
 #include <fstream>
 #include <filesystem>
+#include <map>
+#include <unordered_map>
+#include <shared_mutex>
 
 #include "../src/SDK/weapon/weapon.h"
 #include "../src/SDK/musicKits.h"
@@ -20,9 +19,44 @@
 
 #pragma once
 
-static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
-    ((std::string*)userp)->append((char*)contents, size * nmemb);
-    return size * nmemb;
+// WinHTTP based downloader for environments without CURL
+static std::string WinHttpFetch(const std::string& url) {
+    std::string result;
+    HINTERNET hSession = NULL, hConnect = NULL, hRequest = NULL;
+    URL_COMPONENTS urlComp = { 0 };
+    urlComp.dwStructSize = sizeof(urlComp);
+
+    std::wstring wurl(url.begin(), url.end());
+    wchar_t host[256], path[1024];
+    urlComp.lpszHostName = host;
+    urlComp.dwHostNameLength = 256;
+    urlComp.lpszUrlPath = path;
+    urlComp.dwUrlPathLength = 1024;
+
+    if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &urlComp)) return "";
+
+    hSession = WinHttpOpen(L"SkinChanger/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (hSession) hConnect = WinHttpConnect(hSession, host, urlComp.nPort, 0);
+    if (hConnect) hRequest = WinHttpOpenRequest(hConnect, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, (urlComp.nPort == 443) ? WINHTTP_FLAG_SECURE : 0);
+
+    if (hRequest && WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(hRequest, NULL)) {
+        DWORD dwSize = 0;
+        do {
+            if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) break;
+            if (dwSize == 0) break;
+            std::vector<char> buffer(dwSize);
+            DWORD dwDownloaded = 0;
+            if (WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) {
+                result.append(buffer.data(), dwDownloaded);
+            }
+        } while (dwSize > 0);
+    }
+
+    if (hRequest) WinHttpCloseHandle(hRequest);
+    if (hConnect) WinHttpCloseHandle(hConnect);
+    if (hSession) WinHttpCloseHandle(hSession);
+
+    return result;
 }
 
 std::unordered_map<uint16_t, std::string> KnifeModels = {
@@ -41,7 +75,7 @@ std::unordered_map<uint16_t, std::string> KnifeModels = {
     {518, "phase2/weapons/models/knife/knife_canis/weapon_knife_canis_ag2.vmdl"},
     {519, "phase2/weapons/models/knife/knife_ursus/weapon_knife_ursus_ag2.vmdl"},
     {520, "phase2/weapons/models/knife/knife_navaja/weapon_knife_navaja_ag2.vmdl"},
-    {521, "phase2/weapons/models/knife/knife_outdoor/weapon_knife_outdoor_ag2.vmdl"},
+    {521, "phase2/weapons/models/knife/knife_nomad/weapon_knife_nomad_ag2.vmdl"},
     {522, "phase2/weapons/models/knife/knife_stiletto/weapon_knife_stiletto_ag2.vmdl"},
     {523, "phase2/weapons/models/knife/knife_talon/weapon_knife_talon_ag2.vmdl"},
     {525, "phase2/weapons/models/knife/knife_skeleton/weapon_knife_skeleton_ag2.vmdl"},
@@ -78,15 +112,15 @@ public:
         defIndex = def;
         if (def)
         {
-            name = KnifeNames.at(def);
-            model = KnifeModels.at(def);
-        }  
+            if (KnifeNames.find(def) != KnifeNames.end()) name = KnifeNames.at(def);
+            if (KnifeModels.find(def) != KnifeModels.end()) model = KnifeModels.at(def);
+        }
     }
 
     uint16_t defIndex;
 	std::string name;
 	std::string model;
-    
+
 };
 
 std::vector<Knife_t> Knifes = {
@@ -102,7 +136,7 @@ struct SkinInfo_t {
     std::string name;
     WeaponsEnum weaponType = WeaponsEnum::none;
     int rarity = 0;
-    std::string image_url; // Added Image URL
+    std::string image_url;
 };
 
 struct Glove_t
@@ -110,14 +144,14 @@ struct Glove_t
     uint16_t defIndex;
     int Paint;
     std::string name;
-    
+
     Glove_t(uint16_t _def = 0, int _paint = 0, std::string _name = "") : defIndex(_def), Paint(_paint), name(_name) {}
 };
 
 static std::map<uint16_t, std::string> GloveNames = {
     {5027, "Bloodhound"},
-    {5028, "T-Default"}, // default
-    {5029, "CT-Default"}, // default
+    {5028, "T-Default"},
+    {5029, "CT-Default"},
     {5030, "Sport"},
     {5031, "Driver"},
     {5032, "Hand Wraps"},
@@ -127,7 +161,6 @@ static std::map<uint16_t, std::string> GloveNames = {
     {5025, "Broken Fang"}
 };
 
-// We need a list of glove types to select from
 static std::vector<Glove_t> GloveTypes = {
     Glove_t(5027, 0, "Bloodhound Gloves"),
     Glove_t(5030, 0, "Sport Gloves"),
@@ -139,7 +172,8 @@ static std::vector<Glove_t> GloveTypes = {
     Glove_t(5025, 0, "Broken Fang Gloves")
 };
 
-bool ForceUpdate = false;
+extern bool ForceUpdate;
+
 class SkinManager
 {
 public:
@@ -147,9 +181,11 @@ public:
     Glove_t Gloves = Glove_t();
     Knife_t Knife = Knife_t();
     MusicKit_t MusicKit = MusicKit_t(static_cast<uint16_t>(MusicKit::CounterStrike2), "Counter-Strike 2");
+    mutable std::shared_mutex mtx;
 
     void AddSkin(SkinInfo_t AddedSkin)
     {
+        std::unique_lock lock(mtx);
         for (SkinInfo_t& skin : Skins)
         {
             if (skin.weaponType == AddedSkin.weaponType)
@@ -160,36 +196,50 @@ public:
                 skin = AddedSkin;
                 ForceUpdate = true;
                 return;
-            }    
+            }
         }
 
         Skins.push_back(AddedSkin);
         ForceUpdate = true;
     }
 
-    SkinInfo_t GetSkin(const WeaponsEnum def)
+    SkinInfo_t GetSkin(const WeaponsEnum def) const
     {
+        std::shared_lock lock(mtx);
         for (const SkinInfo_t& skin : Skins)
             if (skin.weaponType == def)
                 return skin;
         return SkinInfo_t{0, false, std::string(), WeaponsEnum::none};
     }
 
-    uint16_t GetSkinIndexFromArray(std::vector<SkinInfo_t> WeaponSkins, SkinInfo_t SelectedSkin)
+    void SetGloves(Glove_t g)
     {
-        for (int i = 0; i < WeaponSkins.size(); i++)
-        {
-            if(WeaponSkins[i].Paint == SelectedSkin.Paint)
-				return i;
-        }
-
-		return 0;
+        std::unique_lock lock(mtx);
+        Gloves = g;
+        ForceUpdate = true;
     }
 
-    //void PharseJson(//file path here);
-	//void ExportJson(//file path here);
+    Glove_t GetGloves() const
+    {
+        std::shared_lock lock(mtx);
+        return Gloves;
+    }
+
+    void SetKnife(Knife_t k)
+    {
+        std::unique_lock lock(mtx);
+        Knife = k;
+        ForceUpdate = true;
+    }
+
+    Knife_t GetKnife() const
+    {
+        std::shared_lock lock(mtx);
+        return Knife;
+    }
 };
-SkinManager* skinManager = new SkinManager();
+
+extern SkinManager* skinManager;
 
 class CSkinDB {
 private:
@@ -205,10 +255,8 @@ private:
     }
 
     int GetPaintIndexSafe(const nlohmann::json& skin) {
-        if (skin.find("paint_index") == skin.end())
-            return 0;
-        if (skin["paint_index"].is_number_integer())
-            return skin["paint_index"].get<int>();
+        if (skin.find("paint_index") == skin.end()) return 0;
+        if (skin["paint_index"].is_number_integer()) return skin["paint_index"].get<int>();
         if (skin["paint_index"].is_string()) {
             try { return std::stoi(skin["paint_index"].get<std::string>()); }
             catch (...) { return 0; }
@@ -217,11 +265,8 @@ private:
     }
 
     int GetRarityIdSafe(const nlohmann::json& skin) {
-        if (skin.find("rarity") == skin.end())
-            return 1;
-        
+        if (skin.find("rarity") == skin.end()) return 1;
         auto& r = skin["rarity"];
-        // Check for ID
         if (r.is_object() && r.find("id") != r.end()) {
             if (r["id"].is_string()) {
                 std::string idStr = r["id"].get<std::string>();
@@ -236,7 +281,6 @@ private:
             }
             if (r["id"].is_number_integer()) return r["id"].get<int>();
         }
-        
         return 1;
     }
 
@@ -249,198 +293,93 @@ private:
     };
 
     std::vector<std::string> gloveTypes = {
-        "Bloodhound Gloves", "Broken Fang Gloves", 
-        "Driver Gloves", "Hand Wraps", 
-        "Hydra Gloves", "Moto Gloves", 
+        "Bloodhound Gloves", "Broken Fang Gloves",
+        "Driver Gloves", "Hand Wraps",
+        "Hydra Gloves", "Moto Gloves",
         "Specialist Gloves", "Sport Gloves"
     };
 
     WeaponsEnum GetDefPerString(const std::string& name)
     {
         static const std::unordered_map<std::string, WeaponsEnum> weaponMap = {
-            {"AK-47", WeaponsEnum::Ak47},
-            {"AUG", WeaponsEnum::Aug},
-            {"AWP", WeaponsEnum::Awp},
-            {"PP-Bizon", WeaponsEnum::Bizon},
-            {"PP-CZ75-Auto", WeaponsEnum::Cz65A},
-            {"Desert Eagle", WeaponsEnum::Deagle},
-            {"Dual Berettas", WeaponsEnum::Elite},
-            {"FAMAS", WeaponsEnum::Famas},
-            {"Five-SeveN", WeaponsEnum::FiveSeven},
-            {"G3SG1", WeaponsEnum::G3Sg1},
-            {"Galil AR", WeaponsEnum::Sg556},
-            {"Glock-18", WeaponsEnum::Glock},
-            {"P2000", WeaponsEnum::P200},
-            {"M249", WeaponsEnum::M249},
-            {"M4A1-S", WeaponsEnum::M4A1Silencer},
-            {"M4A4", WeaponsEnum::M4A4},
-            {"MAC-10", WeaponsEnum::Mac10},
-            {"MAG-7", WeaponsEnum::Mag7},
-            {"MP5-SD", WeaponsEnum::Ump45},
-            {"MP7", WeaponsEnum::Mp7},
-            {"MP9", WeaponsEnum::Mp9},
-            {"Negev", WeaponsEnum::Negev},
-            {"Nova", WeaponsEnum::Nova},
-            {"XM1014", WeaponsEnum::Xm1014},
-            {"USP-S", WeaponsEnum::UspS},
-            {"Tec-9", WeaponsEnum::Tec9},
-            {"Zeus x27", WeaponsEnum::Zeus},
-            {"SSG 08", WeaponsEnum::Ssg08},
-            {"SG 553", WeaponsEnum::Sg556},
-            {"SCAR-20", WeaponsEnum::Scar20},
-            {"Sawed-Off", WeaponsEnum::Sawedoof},
-            {"R8 Revolver", WeaponsEnum::Revolver},
-            {"P90", WeaponsEnum::P90},
+            {"AK-47", WeaponsEnum::Ak47}, {"AUG", WeaponsEnum::Aug}, {"AWP", WeaponsEnum::Awp},
+            {"PP-Bizon", WeaponsEnum::Bizon}, {"CZ75-Auto", WeaponsEnum::Cz65A},
+            {"Desert Eagle", WeaponsEnum::Deagle}, {"Dual Berettas", WeaponsEnum::Elite},
+            {"FAMAS", WeaponsEnum::Famas}, {"Five-SeveN", WeaponsEnum::FiveSeven},
+            {"G3SG1", WeaponsEnum::G3Sg1}, {"Galil AR", WeaponsEnum::Galil},
+            {"Glock-18", WeaponsEnum::Glock}, {"P2000", WeaponsEnum::P200},
+            {"M249", WeaponsEnum::M249}, {"M4A1-S", WeaponsEnum::M4A1Silencer},
+            {"M4A4", WeaponsEnum::M4A4}, {"MAC-10", WeaponsEnum::Mac10},
+            {"MAG-7", WeaponsEnum::Mag7}, {"MP5-SD", WeaponsEnum::Mp5SD},
+            {"MP7", WeaponsEnum::Mp7}, {"MP9", WeaponsEnum::Mp9},
+            {"Negev", WeaponsEnum::Negev}, {"Nova", WeaponsEnum::Nova},
+            {"XM1014", WeaponsEnum::Xm1014}, {"USP-S", WeaponsEnum::UspS},
+            {"Tec-9", WeaponsEnum::Tec9}, {"Zeus x27", WeaponsEnum::Zeus},
+            {"SSG 08", WeaponsEnum::Ssg08}, {"SG 553", WeaponsEnum::Sg556},
+            {"SCAR-20", WeaponsEnum::Scar20}, {"Sawed-Off", WeaponsEnum::Sawedoof},
+            {"R8 Revolver", WeaponsEnum::Revolver}, {"P90", WeaponsEnum::P90},
             {"P250", WeaponsEnum::p250}
         };
 
         for (const auto& [key, value] : weaponMap)
-        {
-            if (name.find(key) != std::string::npos)
-                return value;
-        }
-
-        return WeaponsEnum(); // or some default/invalid value
-    }
-
-    bool EnsureDirectory(const std::wstring& path)
-    {
-        return std::filesystem::create_directories(path) || std::filesystem::exists(path);
+            if (name.find(key) != std::string::npos) return value;
+        return WeaponsEnum::none;
     }
 
 public:
-    void DumpSkindb() 
+    void DumpSkindb()
     {
-        CURL* curl = curl_easy_init();
-        if (!curl) return;
-
-        std::string readBuffer;
-        curl_easy_setopt(curl, CURLOPT_URL, "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json");
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-
-        CURLcode res = curl_easy_perform(curl);
-        if (res != CURLE_OK) {
-            std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
-            curl_easy_cleanup(curl);
+        std::cout << "[SkinDB] Downloading skins database..." << std::endl;
+        std::string readBuffer = WinHttpFetch("https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json");
+        if (readBuffer.empty()) {
+            std::cout << "[SkinDB] Failed to download skins database." << std::endl;
             return;
         }
-        curl_easy_cleanup(curl);
 
         try {
             auto jsonData = nlohmann::json::parse(readBuffer);
-            std::cout << "JSON Parsed successfully. Items: " << jsonData.size() << std::endl;
-
             for (auto& skin : jsonData) {
                 SkinInfo_t info;
                 info.Paint = GetPaintIndexSafe(skin);
                 info.name = GetStringSafe(skin, "name");
                 info.weaponType = GetDefPerString(info.name);
-                
-                // Parse Rarity
                 info.rarity = GetRarityIdSafe(skin);
-
-                // Parse Image
                 info.image_url = GetStringSafe(skin, "image");
 
-                if (skin.find("legacy_model") != skin.end() && skin["legacy_model"].is_boolean()) {
+                if (skin.find("legacy_model") != skin.end() && skin["legacy_model"].is_boolean())
                     info.bUsesOldModel = skin["legacy_model"].get<bool>();
-                }
 
-                std::string weaponType = GetStringSafe(skin, "weapon");
-                bool isKnife = false;
-                bool isGlove = false;
+                bool isKnife = false, isGlove = false;
+                for (auto& k : knifeTypes) if (info.name.find(k) != std::string::npos) { isKnife = true; break; }
+                for (auto& g : gloveTypes) if (info.name.find(g) != std::string::npos) { isGlove = true; break; }
 
-                for (auto& k : knifeTypes)
-                    if (info.name.find(k) != std::string::npos) {
-                        isKnife = true;
-                        break;
-                    }
-
-                for (auto& g : gloveTypes)
-                    if (info.name.find(g) != std::string::npos) {
-                        isGlove = true;
-                        break;
-                    }
-
-                if (isKnife)
-                {
-                    knifeSkins.push_back(info);
-                    continue;
-                }
-                if (isGlove)
-                {
-                    gloveSkins.push_back(info);
-                    continue;
-                }
-                
-                // Music Kits?
-                // The API might not return Music Kits here. They are usually in a separate endpoint or type.
-                // However, if we want images for Music Kits, we need to find them.
-                // For now, let's just make sure we don't crash.
-                // We'll populate Music Kit lines in skindb from this loop if they exist?
-                // The current JSON is supposedly "skins.json". Music kits are likely elsewhere.
-                // We will leave Music Kits with empty images for now, avoiding the error.
-
-                weaponSkins.push_back(info);     
+                if (isKnife) knifeSkins.push_back(info);
+                else if (isGlove) gloveSkins.push_back(info);
+                else weaponSkins.push_back(info);
             }
-            std::cout << "Skins parsed into vector. Total: " << weaponSkins.size() << std::endl;
-        }
-        catch (const std::exception& e) {
-            std::cerr << "JSON parse error: " << e.what() << std::endl;
-        }
-
-		std::cout << "Skindb dumped" << std::endl;
+            std::cout << "[SkinDB] Skins parsed: " << (weaponSkins.size() + knifeSkins.size() + gloveSkins.size()) << std::endl;
+        } catch (...) { std::cerr << "[SkinDB] JSON parse error" << std::endl; }
     }
 
-    void DumpSkinEconImages()
-    {
-
-        return;
-        
-		std::cout << "Econ images dumped" << std::endl;
-    }
-
-    inline void Dump() { DumpSkindb(); DumpSkinEconImages(); }
+    inline void Dump() { DumpSkindb(); }
 
     std::vector<SkinInfo_t> GetWeaponSkins(WeaponsEnum type = WeaponsEnum::none)
     {
         std::vector<SkinInfo_t> results;
-
-        results.push_back(SkinInfo_t{ 0, false, "Vanila", WeaponsEnum::none });
-
-        if (type == WeaponsEnum::none)
-            return results;
-
-        for (const auto& skin : weaponSkins)
-        {
-            if (skin.weaponType != type)
-                continue;
-
-            results.push_back(skin);
-        }
-
+        results.push_back(SkinInfo_t{ 0, false, "Vanilla", WeaponsEnum::none, 1 });
+        if (type == WeaponsEnum::none) return results;
+        for (const auto& skin : weaponSkins) if (skin.weaponType == type) results.push_back(skin);
         return results;
     }
 
     std::vector<SkinInfo_t> GetGloveSkins(const std::string& gloveType)
     {
         std::vector<SkinInfo_t> results;
-        if (gloveType.empty()) return results;
-
-        for (const auto& skin : gloveSkins)
-        {
-            // Simple string matching for now (e.g. "Sport Gloves" in "Sport Gloves | Vice")
-            if (skin.name.find(gloveType) != std::string::npos) {
-                results.push_back(skin);
-            }
-        }
+        for (const auto& skin : gloveSkins) if (skin.name.find(gloveType) != std::string::npos) results.push_back(skin);
         return results;
     }
 
-    std::vector<SkinInfo_t>& GetKnifeSkins() { return knifeSkins; }
+    const std::vector<SkinInfo_t>& GetKnifeSkins() { return knifeSkins; }
 };
-CSkinDB* skindb = new CSkinDB();
+
+extern CSkinDB* skindb;

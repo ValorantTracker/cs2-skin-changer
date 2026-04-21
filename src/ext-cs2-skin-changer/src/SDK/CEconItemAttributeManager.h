@@ -77,8 +77,8 @@ public:
 
 		const CPtrGameVector preAttributes = mem.Read<CPtrGameVector>(item + Offsets::m_AttributeList + Offsets::m_Attributes);
 
-		if (attributes.empty() || preAttributes.size || preAttributes.ptr)
-			return;// dont want to get a mem block for nothing
+		if (attributes.empty())
+			return;
 		
 		const uintptr_t memBlock = mem.Allocate();
 

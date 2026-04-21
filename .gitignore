@@ -45,3 +45,6 @@ packages/
 *.ipch
 *.aps
 *.ncb
+# CS2 generated dump/output files
+src/ext-cs2-skin-changer/output/
+src/ext-cs2-skin-changer/cs2-dumper.exe

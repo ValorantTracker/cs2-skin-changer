@@ -104,14 +104,19 @@ SkinInfo_t GetSkin(const uintptr_t item)
 void SetMeshMask(const uintptr_t ent, const uint64_t mask)
 {
     const auto& node = mem.Read<uintptr_t>(ent + Offsets::m_pGameSceneNode);
+    if (!node) return;
+
     const auto model = node + Offsets::m_modelState;
     const auto dirtyAttributes = mem.Read<uintptr_t>(model + Offsets::m_pDirtyModelData);
 
-    mem.Write<uint64_t>(dirtyAttributes + Offsets::m_DrityMeshGroupMask, mask);
+    if (dirtyAttributes) {
+        mem.Write<uint64_t>(dirtyAttributes + Offsets::m_DrityMeshGroupMask, mask);
+    }
 
     bool updated = false;
 
 OverideMeshMaskNetvar:
+    // Aggressive write loop to win race condition against networked updates
     for (int i = 0; i < 700; i++)
     {
         mem.Write<uint64_t>(model + Offsets::m_MeshGroupMask, mask);
@@ -138,9 +143,8 @@ void UpdateHud(const uintptr_t weapon, const uint32_t delay = 200)
 
 void UpdateWeapons(const std::vector<uintptr_t> weapons)
 {
+    // Calling internal game function is required for refresh despite thread safety risks
     mem.CallThread(Sigs::RegenerateWeaponSkins);
-
-    //clean up & hud update
 
     for (const uintptr_t& weapon : weapons)
     {
@@ -150,8 +154,6 @@ void UpdateWeapons(const std::vector<uintptr_t> weapons)
             continue;
 
         mem.Write<uint32_t>(weapon + Offsets::m_nFallbackPaintKit, -1);
-
-        //UpdateHud(weapon);
 
         econItemAttributeManager.Remove(item);
         continue;

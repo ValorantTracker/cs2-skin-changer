@@ -11,19 +11,28 @@ uintptr_t GetHudArms()
 uintptr_t GetHudWeapon(const uintptr_t weapon)
 {
     const auto& armsBase = GetHudArms();
+    if (!armsBase) return 0;
+
     const auto& armsNode = mem.Read<uintptr_t>(armsBase + Offsets::m_pGameSceneNode);
+    if (!armsNode) return 0;
+
     for (uintptr_t viewModel = mem.Read<uintptr_t>(armsNode + Offsets::m_pChild); viewModel; viewModel = mem.Read<uintptr_t>(viewModel + Offsets::m_pNextSibling))
     {
-        if (!viewModel || !mem.Read<uintptr_t>(viewModel + Offsets::m_pOwner))
+        if (!viewModel)
             continue;
 
-        if (GetEntityByHandle(mem.Read<uint32_t>(mem.Read<uintptr_t>(viewModel + Offsets::m_pOwner) + Offsets::m_hOwnerEntity)) != weapon)
+        uintptr_t ownerPtr = mem.Read<uintptr_t>(viewModel + Offsets::m_pOwner);
+        if (!ownerPtr)
             continue;
 
-        return mem.Read<uintptr_t>(viewModel + Offsets::m_pOwner);
+        uint32_t ownerHandle = mem.Read<uint32_t>(ownerPtr + Offsets::m_hOwnerEntity);
+        if (GetEntityByHandle(ownerHandle) != weapon)
+            continue;
+
+        return ownerPtr;
     }
 
-    return GetHudWeapon(weapon);
+    return 0;
 }
 
 //uintptr_t GetHudWeapon(const uintptr_t& weapon)

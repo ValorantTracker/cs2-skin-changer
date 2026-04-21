@@ -12,9 +12,19 @@ using json = nlohmann::json;
 class CConfigManager
 {
 private:
-    std::wstring configDir = L"C:\\Skin2Merde\\";
+    std::wstring configDir;
 
 public:
+    CConfigManager()
+    {
+        wchar_t path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
+            configDir = std::wstring(path) + L"\\SkinChanger\\";
+        } else {
+            configDir = L".\\config\\";
+        }
+    }
+
     void Setup()
     {
         if (!fs::exists(configDir))
@@ -51,6 +61,7 @@ public:
             s["rarity"] = skin.rarity;
             s["name"] = skin.name;
             s["image"] = skin.image_url;
+            s["old_model"] = skin.bUsesOldModel;
             
             j["skins"].push_back(s);
         }
@@ -98,6 +109,7 @@ public:
                     else skin.name = "Unknown";
                     
                     if (element.find("image") != element.end()) skin.image_url = element["image"].get<std::string>();
+                    if (element.find("old_model") != element.end()) skin.bUsesOldModel = element["old_model"].get<bool>();
                     
                     skinManager->AddSkin(skin);
                 }

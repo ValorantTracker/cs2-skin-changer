@@ -1,1 +1,4 @@
-<img width="1230" height="1204" alt="image" src="https://github.com/user-attachments/assets/67326eb6-bcc0-4b59-838f-a69d5cab0dee" />
+# This is updated version of skinchanger from ValorantTracker.
+# His original repo is at: https://github.com/ValorantTracker/cs2-skin-changer
+# Fixed logic, offsets, removed unused imgui files and added LTO optimisation, made config system actualy work and added BUILD.bat for easier compilation.
+# Next main thing would be adding support for knifes and gloves but that will be in future.

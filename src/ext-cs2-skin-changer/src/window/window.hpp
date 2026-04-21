@@ -92,7 +92,7 @@ namespace overlay {
             
             if (msg.message == WM_QUIT) ShouldQuit = true;
             if (msg.message == WM_MOUSEWHEEL) {
-                SC_GUI::Input.scrollDelta = (short)HIWORD(msg.wParam);
+                SC_GUI::Input.scrollDelta += (short)HIWORD(msg.wParam);
             }
             if (msg.message == WM_CHAR) {
                  SC_GUI::Input.lastChar = (char)msg.wParam;

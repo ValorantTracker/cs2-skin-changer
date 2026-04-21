@@ -269,20 +269,7 @@ public:
 
     uintptr_t GetFreeMemoryRegion(size_t size)
     {
-        uintptr_t address = NULL;
-        size_t validRegionCount = NULL;
-        while (true)
-        {
-            if (IsAllocated(address) && !Read<uint8_t>(address))
-                validRegionCount++;
-            else
-                validRegionCount = NULL;
-
-            if (validRegionCount == size)
-                return address - validRegionCount + 1;
-
-            address++;
-        }
+        return Allocate(NULL, size);
     }
 
     void Patch(uintptr_t address, int size)
@@ -290,18 +277,24 @@ public:
         if (!address)
             return;
 
+        DWORD oldProtect;
+        VirtualProtectEx(hProcess, (LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect);
         for (int i = 0; i < size; i++)
         {
             Write<uint8_t>(address + i, 0x90);
         }
+        VirtualProtectEx(hProcess, (LPVOID)address, size, oldProtect, &oldProtect);
     }
 
     void WriteBytes(uintptr_t address, std::vector<uint8_t> bytes)
     {
+        DWORD oldProtect;
+        VirtualProtectEx(hProcess, (LPVOID)address, bytes.size(), PAGE_EXECUTE_READWRITE, &oldProtect);
         for (int i = 0; i < bytes.size(); i++)
         {
             Write<uint8_t>(address + i, bytes[i]);
         }
+        VirtualProtectEx(hProcess, (LPVOID)address, bytes.size(), oldProtect, &oldProtect);
     }
 
     std::vector<uint8_t> ReadBytes(uintptr_t address, int size)
@@ -467,7 +460,12 @@ public:
 
         HANDLE hThread = CreateThread(funcAddress, arg);
         if (hThread) {
-            WaitForSingleObject(hThread, INFINITE);
+            // Wait with a timeout to prevent application hang if the remote thread stalls
+            DWORD waitResult = WaitForSingleObject(hThread, 5000); 
+            if (waitResult == WAIT_TIMEOUT) {
+                // Thread hung, detach or terminate? For safety we just close handle and let it run or fail
+                // but we don't block the UI thread.
+            }
             CloseHandle(hThread);
         }
     }

@@ -11,8 +11,10 @@
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <shlwapi.h>
 
 #pragma comment (lib,"Gdiplus.lib")
+#pragma comment (lib,"Shlwapi.lib")
 
 using namespace Gdiplus;
 
@@ -76,7 +78,12 @@ namespace SC_GUI {
 
             prevMousePos = mousePos;
             GetCursorPos(&mousePos);
-            ScreenToClient(GetForegroundWindow(), &mousePos); // Map to client area roughly
+            
+            // Map to client area properly
+            HWND hwnd = GetForegroundWindow();
+            if (hwnd) {
+                ScreenToClient(hwnd, &mousePos);
+            }
 
             mouseDelta.x = mousePos.x - prevMousePos.x;
             mouseDelta.y = mousePos.y - prevMousePos.y;
@@ -249,6 +256,30 @@ namespace SC_GUI {
         return clicked;
     }
 
+    inline void Shutdown() {
+        if (mainFont) delete mainFont;
+        if (largeFont) delete largeFont;
+        if (smallFont) delete smallFont;
+        if (titleFont) delete titleFont;
+        if (brush) delete brush;
+        if (pen) delete pen;
+        if (centerFormat) delete centerFormat;
+        if (leftFormat) delete leftFormat;
+        if (vCenterFormat) delete vCenterFormat;
+
+        mainFont = nullptr;
+        largeFont = nullptr;
+        smallFont = nullptr;
+        titleFont = nullptr;
+        brush = nullptr;
+        pen = nullptr;
+        centerFormat = nullptr;
+        leftFormat = nullptr;
+        vCenterFormat = nullptr;
+
+        GdiplusShutdown(gdiplusToken);
+    }
+
     // --- Image Handling utilizing LRU Cache + Disk Persistence + RAM Limit ---
     class ImageCache {
     private:
@@ -265,10 +296,10 @@ namespace SC_GUI {
         
         mutable std::shared_mutex cacheMutex; // RW Lock
         
-        const size_t MAX_RAM_USAGE = 50 * 1024 * 1024; // 50 MB
+        const size_t MAX_RAM_USAGE = 200 * 1024 * 1024; // 200 MB
         size_t currentRamUsage = 0;
         
-        const std::string CACHE_DIR = "C:\\Skin2Merde\\images";
+        std::string CACHE_DIR;
 
         // Download State
         std::map<std::string, bool> downloadActive;
@@ -284,14 +315,15 @@ namespace SC_GUI {
             return s + ".png";
         }
 
-        // Helper for raw bytes
-        struct MemoryStruct {
-            char* memory;
-            size_t size;
-        };
-
     public:
         ImageCache() {
+            char path[MAX_PATH];
+            if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, path))) {
+                CACHE_DIR = std::string(path) + "\\SkinChanger\\cache\\images";
+            } else {
+                CACHE_DIR = ".\\cache\\images";
+            }
+
             try {
                 if (!std::filesystem::exists(CACHE_DIR)) {
                     std::filesystem::create_directories(CACHE_DIR);
@@ -350,61 +382,64 @@ namespace SC_GUI {
                             }
                     }
 
-                    // B. Download if Disk Miss or Disabled
-                    CURL* curl = curl_easy_init();
-                    if (curl) {
-                        MemoryStruct chunk;
-                        chunk.memory = (char*)malloc(1);
-                        chunk.size = 0;
-                        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-                        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* contents, size_t size, size_t nmemb, void* userp) -> size_t {
-                            size_t realsize = size * nmemb;
-                            MemoryStruct* mem = (MemoryStruct*)userp;
-                            char* ptr = (char*)realloc(mem->memory, mem->size + realsize + 1);
-                            if(!ptr) return 0;
-                            mem->memory = ptr;
-                            memcpy(&(mem->memory[mem->size]), contents, realsize);
-                            mem->size += realsize;
-                            mem->memory[mem->size] = 0;
-                            return realsize;
-                        });
-                        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
-                        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-                        CURLcode res = curl_easy_perform(curl);
-                        if (res == CURLE_OK) {
-                            IStream* pStream = NULL;
-                            if (CreateStreamOnHGlobal(NULL, TRUE, &pStream) == S_OK) {
-                                pStream->Write(chunk.memory, (ULONG)chunk.size, NULL);
-                                pStream->Seek({0}, STREAM_SEEK_SET, NULL);
-                                Image* pImg = Image::FromStream(pStream);
-                                if (pImg && pImg->GetLastStatus() == Ok) {
-                                    // Create Scaled Thumbnail
-                                    int tW = 200; int tH = 150; 
-                                    Bitmap* thumb = new Bitmap(tW, tH, PixelFormat32bppARGB);
-                                    Graphics* g = Graphics::FromImage(thumb);
-                                    g->SetInterpolationMode(InterpolationModeHighQualityBicubic);
-                                    g->DrawImage(pImg, 0, 0, tW, tH);
-                                    delete g;
-                                    delete pImg; 
-                                    
-                                    // Save to Disk (if enabled)
-                                    if (diskEnabled) {
-                                        try {
-                                            if (!std::filesystem::exists(CACHE_DIR)) std::filesystem::create_directories(CACHE_DIR);
-                                            std::string path = CACHE_DIR + "\\" + SanitizeFilename(key);
-                                            CLSID pngClsid;
-                                            GetEncoderClsid(L"image/png", &pngClsid);
-                                            thumb->Save(std::wstring(path.begin(), path.end()).c_str(), &pngClsid, NULL);
-                                        } catch (...) {}
-                                    }
+                    /* WinHTTP Implementation */
+                    HINTERNET hSession = NULL, hConnect = NULL, hRequest = NULL;
+                    URL_COMPONENTS urlComp = { 0 };
+                    urlComp.dwStructSize = sizeof(urlComp);
+                    std::wstring wurl(url.begin(), url.end());
+                    wchar_t host[256], path[1024];
+                    urlComp.lpszHostName = host;
+                    urlComp.dwHostNameLength = 256;
+                    urlComp.lpszUrlPath = path;
+                    urlComp.dwUrlPathLength = 1024;
 
-                                    AddDirect(key, thumb);
-                                } else { delete pImg; }
-                                pStream->Release(); 
+                    if (WinHttpCrackUrl(wurl.c_str(), 0, 0, &urlComp)) {
+                        hSession = WinHttpOpen(L"SkinChanger/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+                        if (hSession) hConnect = WinHttpConnect(hSession, host, urlComp.nPort, 0);
+                        if (hConnect) hRequest = WinHttpOpenRequest(hConnect, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, (urlComp.nPort == 443) ? WINHTTP_FLAG_SECURE : 0);
+                        
+                        if (hRequest && WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(hRequest, NULL)) {
+                            std::vector<char> fullBuffer;
+                            DWORD dwSize = 0;
+                            while (WinHttpQueryDataAvailable(hRequest, &dwSize) && dwSize > 0) {
+                                std::vector<char> temp(dwSize);
+                                DWORD dwDownloaded = 0;
+                                if (WinHttpReadData(hRequest, temp.data(), dwSize, &dwDownloaded)) {
+                                    fullBuffer.insert(fullBuffer.end(), temp.begin(), temp.begin() + dwDownloaded);
+                                } else break;
+                            }
+
+                            if (!fullBuffer.empty()) {
+                                IStream* pStream = SHCreateMemStream((const BYTE*)fullBuffer.data(), (UINT)fullBuffer.size());
+                                if (pStream) {
+                                    Image* pImg = Image::FromStream(pStream);
+                                    if (pImg && pImg->GetLastStatus() == Ok) {
+                                        int tW = 200; int tH = 150; 
+                                        Bitmap* thumb = new Bitmap(tW, tH, PixelFormat32bppARGB);
+                                        Graphics* g = Graphics::FromImage(thumb);
+                                        g->SetInterpolationMode(InterpolationModeHighQualityBicubic);
+                                        g->DrawImage(pImg, 0, 0, tW, tH);
+                                        delete g;
+                                        delete pImg; 
+                                        
+                                        if (diskEnabled) {
+                                            try {
+                                                if (!std::filesystem::exists(CACHE_DIR)) std::filesystem::create_directories(CACHE_DIR);
+                                                std::string pathS = CACHE_DIR + "\\" + SanitizeFilename(key);
+                                                CLSID pngClsid;
+                                                GetEncoderClsid(L"image/png", &pngClsid);
+                                                thumb->Save(std::wstring(pathS.begin(), pathS.end()).c_str(), &pngClsid, NULL);
+                                            } catch (...) {}
+                                        }
+                                        AddDirect(key, thumb);
+                                    }
+                                    pStream->Release();
+                                }
                             }
                         }
-                        free(chunk.memory);
-                        curl_easy_cleanup(curl);
+                        if (hRequest) WinHttpCloseHandle(hRequest);
+                        if (hConnect) WinHttpCloseHandle(hConnect);
+                        if (hSession) WinHttpCloseHandle(hSession);
                     }
                     SetDownloading(key, false);
                 }).detach();
